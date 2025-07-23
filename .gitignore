@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.pyo
+*.pyd
+*.pdb
+*.log
+*.sqlite3
+*.db
+*.DS_Store
+*.swp
+*.bak
+*.tmp
+*.old
+*.orig
+*.env
+.venv/
+venv/
+ENV/
+env.bak/
+.idea/
+.vscode/
+# Project-specific
+faces/
+# OS
+Thumbs.db
+.DS_Store
+# Jupyter
+.ipynb_checkpoints/
+# Test
+htmlcov/
+.tox/
+.coverage
+.cache
+.pytest_cache/
+# VSCode
+.history/
+
