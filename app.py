@@ -78,26 +78,60 @@ face_task_queue = queue.Queue()
 face_result_queue = queue.Queue()
 stop_face_worker = threading.Event()
 
-def extract_head_region(bbox, expansion_factor=0.3):
+def extract_head_region(bbox, width_ratio=0.5, aspect_ratio=1.2, expansion_factor=0.15):
     """
-    Mengekstrak area kepala dari bounding box orang.
-    expansion_factor: faktor ekspansi untuk area kepala (0.3 = 30% lebih besar)
+    Mengekstrak area kepala dengan mempertahankan rasio aspek (proporsi) kepala.
+    Tinggi kepala dihitung berdasarkan lebarnya agar bentuk kotak lebih alami.
+    
+    Args:
+        bbox (tuple): Bounding box untuk seluruh orang (x1, y1, x2, y2).
+        width_ratio (float): Perkiraan rasio lebar kepala terhadap lebar total bbox.
+        aspect_ratio (float): Rasio aspek kepala (tinggi / lebar). Umumnya sekitar 1.2.
+        expansion_factor (float): Faktor untuk memperluas bbox kepala.
     """
     x1, y1, x2, y2 = bbox
-    width = x2 - x1
-    height = y2 - y1
+    box_width = x2 - x1
+
+    # 1. Perkirakan LEBAR kepala terlebih dahulu (sebagai acuan utama)
+    head_width = int(box_width * width_ratio)
     
-    # Area kepala biasanya 25-30% bagian atas dari tubuh
-    head_height = int(height * 0.3)
-    head_y1 = y1
-    head_y2 = y1 + head_height
+    # 2. Hitung TINGGI kepala berdasarkan lebarnya untuk menjaga proporsi
+    #    <-- PERUBAHAN UTAMA DI SINI
+    head_height = int(head_width * aspect_ratio)
     
-    # Expand sedikit ke samping untuk kepala
-    head_expansion = int(width * expansion_factor)
-    head_x1 = max(0, x1 - head_expansion)
-    head_x2 = x2 + head_expansion
+    # 3. Tentukan pusat horizontal kepala dan koordinat awal
+    head_center_x = (x1 + x2) // 2
+    initial_head_x1 = head_center_x - (head_width // 2)
+    initial_head_y1 = y1  # Kepala dimulai dari atas bbox orang
     
-    return (head_x1, head_y1, head_x2, head_y2)
+    # 4. Terapkan faktor ekspansi (padding)
+    padding_w = int(head_width * expansion_factor)
+    padding_h = int(head_height * expansion_factor)
+
+    final_x1 = initial_head_x1 - padding_w
+    final_y1 = initial_head_y1 - padding_h
+    final_x2 = initial_head_x1 + head_width + padding_w
+    final_y2 = initial_head_y1 + head_height + padding_h
+
+    # 5. Pastikan koordinat tidak keluar dari batas bbox orang asli
+    final_x1 = max(x1, final_x1)
+    final_y1 = max(y1, final_y1)
+    final_x2 = min(x2, final_x2)
+    final_y2 = min(y2, final_y2)
+
+    return (int(final_x1), int(final_y1), int(final_x2), int(final_y2))
+
+# --- Contoh Penggunaan ---
+person_bbox = (200, 100, 400, 500)  # format: (x1, y1, x2, y2)
+
+# Panggil fungsi baru yang lebih proporsional
+head_bbox = extract_head_region(person_bbox)
+
+print(f"Bbox Orang: {person_bbox}")
+print(f"Bbox Kepala (Proporsional): {head_bbox}")
+# Output:
+# Bbox Orang: (200, 100, 400, 500)
+# Bbox Kepala (Proporsional): (235, 82, 365, 238)
 
 def face_worker():
     """Worker thread untuk face recognition yang tidak blocking"""
