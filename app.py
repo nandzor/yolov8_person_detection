@@ -62,7 +62,7 @@ MAX_DISTANCE = 60
 CONFIRMATION_FRAMES_THRESHOLD = 10
 
 # Face Recognition Configuration
-FACE_RECOGNITION_THRESHOLD = 0.4  # Lowered threshold for better accuracy
+FACE_RECOGNITION_THRESHOLD = 0.25  # Lowered threshold for better accuracy
 FACE_MODEL = 'Facenet'  # Options: VGG-Face, Facenet, OpenFace, DeepFace
 
 # Variabel Global untuk Manajemen Status
@@ -504,19 +504,23 @@ def run_detection_and_alerting():
             result = face_result_queue.get()
             temp_id = result['temp_id']
             matched_id = result['matched_id']
-            
+
+            # Jika sudah match dengan person yang ada, langsung hapus dari pending_candidates
             if temp_id in pending_candidates:
-                centroid = pending_candidates[temp_id]['centroid']
-                bbox = pending_candidates[temp_id]['bbox']
-                
-                is_new, final_person_id = register_object(centroid, bbox, matched_id=matched_id)
-                
                 if matched_id:
+                    # Sudah match, daftarkan ke tracked_objects dan hapus dari pending_candidates
+                    centroid = pending_candidates[temp_id]['centroid']
+                    bbox = pending_candidates[temp_id]['bbox']
+                    is_new, final_person_id = register_object(centroid, bbox, matched_id=matched_id)
                     print(f"[INFO] Face match found: menggunakan existing Person {matched_id}")
+                    del pending_candidates[temp_id]
                 else:
+                    # Jika belum match, baru daftarkan sebagai person baru
+                    centroid = pending_candidates[temp_id]['centroid']
+                    bbox = pending_candidates[temp_id]['bbox']
+                    is_new, final_person_id = register_object(centroid, bbox, matched_id=None)
                     print(f"[INFO] Face baru: membuat Person {final_person_id}")
-                
-                del pending_candidates[temp_id]
+                    del pending_candidates[temp_id]
             face_result_queue.task_done()
 
         # --- VISUALISASI DAN EKSEKUSI UNTUK ORANG BARU ---
