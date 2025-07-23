@@ -36,6 +36,8 @@ import json
 from datetime import datetime
 from scipy.spatial import distance as dist # Import eksplisit untuk kejelasan
 import os # Ditambahkan untuk operasi direktori
+import threading
+import queue
 
 # Inisialisasi Haar Cascade untuk deteksi wajah
 HAAR_CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
@@ -62,19 +64,40 @@ MAX_DISTANCE = 60
 CONFIRMATION_FRAMES_THRESHOLD = 10 # Orang harus terdeteksi konsisten selama 10 frame
 
 
+
 # Variabel Global untuk Manajemen Status
 next_person_id = 1
-# tracked_objects hanya berisi objek yang sudah terkonfirmasi (sudah punya ID)
 tracked_objects = {}
-# Buffer calon objek yang belum terkonfirmasi: {temp_id: {'centroid': (x,y), 'bbox': (x1,y1,x2,y2), 'disappeared': 0, 'confirmed_frames': 1}}
 pending_candidates = {}
 next_temp_id = 1
-# Menyimpan orang yang sudah diberi peringatan untuk mencegah duplikasi alert
-# {objectID: timestamp}
 persons_alerted = {}
 
+# Queue dan thread untuk face recognition & crop agar tidak blocking
+face_task_queue = queue.Queue()
+face_result_queue = queue.Queue()
+stop_face_worker = threading.Event()
 
-def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold=0.6):
+def face_worker():
+    while not stop_face_worker.is_set():
+        try:
+            task = face_task_queue.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        if task['type'] == 'recognition':
+            frame, bbox, temp_id = task['frame'], task['bbox'], task['temp_id']
+            matched_id = is_face_already_exists(frame, bbox)
+            face_result_queue.put({'temp_id': temp_id, 'matched_id': matched_id})
+        elif task['type'] == 'save_crop':
+            frame, bbox, person_id = task['frame'], task['bbox'], task['person_id']
+            save_face_crop(frame, bbox, person_id)
+        face_task_queue.task_done()
+
+# Start face worker thread
+face_thread = threading.Thread(target=face_worker, daemon=True)
+face_thread.start()
+
+
+def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold=0.3):
     """Bandingkan crop wajah dengan semua wajah di folder faces menggunakan DeepFace. Return True jika match."""
     import glob
     from deepface import DeepFace
@@ -125,15 +148,11 @@ def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold
         os.remove(temp_face_path)
     return None
 
-def register_object(centroid, bbox, frame=None):
+def register_object(centroid, bbox, frame=None, matched_id=None):
     """Mendaftarkan objek baru yang sudah terkonfirmasi ke tracked_objects dengan ID unik, setelah face recognition."""
     global next_person_id
     # Face recognition: jika wajah sudah ada, update tracked_objects[ID] dengan data baru
-    matched_id = None
-    if frame is not None:
-        matched_id = is_face_already_exists(frame, bbox)
     if matched_id:
-        # Update tracked_objects[matched_id] jika sudah ada, jika belum tambahkan
         tracked_objects[matched_id] = {
             'centroid': centroid,
             'bbox': bbox,
@@ -141,7 +160,7 @@ def register_object(centroid, bbox, frame=None):
             'confirmed_frames': CONFIRMATION_FRAMES_THRESHOLD
         }
         print(f"[INFO] Wajah sudah ada di database, update ID: {matched_id}, batal generate ID baru dan alert.")
-        return False
+        return False  # False = bukan ID baru
     tracked_objects[next_person_id] = {
         'centroid': centroid,
         'bbox': bbox,
@@ -150,7 +169,7 @@ def register_object(centroid, bbox, frame=None):
     }
     print(f"[INFO] Objek terkonfirmasi, didaftarkan sebagai ID: {next_person_id}")
     next_person_id += 1
-    return True
+    return True  # True = ID baru
 
 def deregister_object(object_id):
     """Menghapus objek yang sudah lama tidak terdeteksi."""
@@ -161,7 +180,7 @@ def deregister_object(object_id):
         del persons_alerted[object_id]
 
 
-def update_tracker(detections):
+def update_tracker(detections, frame=None):
     """
     Memperbarui status pelacak berdasarkan deteksi baru.
     Sekarang, ID hanya diberikan saat sudah terkonfirmasi (CONFIRMATION_FRAMES_THRESHOLD).
@@ -173,7 +192,6 @@ def update_tracker(detections):
             tracked_objects[object_id]['disappeared'] += 1
             if tracked_objects[object_id]['disappeared'] > MAX_DISAPPEARED_FRAMES:
                 deregister_object(object_id)
-        # Update pending_candidates juga
         for temp_id in list(pending_candidates.keys()):
             pending_candidates[temp_id]['disappeared'] += 1
             if pending_candidates[temp_id]['disappeared'] > MAX_DISAPPEARED_FRAMES:
@@ -220,7 +238,6 @@ def update_tracker(detections):
             continue
 
         obj_id = all_ids[row]
-        # Update data
         if obj_id in tracked_objects:
             tracked_objects[obj_id]['centroid'] = input_centroids[col]
             tracked_objects[obj_id]['bbox'] = input_bboxes[col]
@@ -231,20 +248,10 @@ def update_tracker(detections):
             pending_candidates[obj_id]['bbox'] = input_bboxes[col]
             pending_candidates[obj_id]['disappeared'] = 0
             pending_candidates[obj_id]['confirmed_frames'] += 1
-            # Jika sudah lolos threshold, daftarkan ke tracked_objects
+            # Jika sudah lolos threshold, masukkan ke queue untuk face recognition
             if pending_candidates[obj_id]['confirmed_frames'] >= CONFIRMATION_FRAMES_THRESHOLD:
-                # Kirim frame ke register_object untuk face recognition
-                frame_ref = None
-                try:
-                    import inspect
-                    frame_ref = inspect.currentframe().f_back.f_locals.get('frame', None)
-                except Exception:
-                    frame_ref = None
-                # Jika wajah sudah ada, batal register dan hapus dari pending
-                if register_object(pending_candidates[obj_id]['centroid'], pending_candidates[obj_id]['bbox'], frame=frame_ref):
-                    del pending_candidates[obj_id]
-                else:
-                    del pending_candidates[obj_id]
+                if frame is not None:
+                    face_task_queue.put({'type': 'recognition', 'frame': frame.copy(), 'bbox': pending_candidates[obj_id]['bbox'], 'temp_id': obj_id})
         used_rows.add(row)
         used_cols.add(col)
 
@@ -350,16 +357,38 @@ def run_detection_and_alerting():
             break
 
         results = model(frame, stream=True, classes=[0], verbose=False)
-        
         person_detections = []
         for r in results:
             for box in r.boxes:
                 if box.conf[0] > 0.6:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     person_detections.append((x1, y1, x2, y2))
-        
-        update_tracker(person_detections)
 
+        update_tracker(person_detections, frame=frame)
+
+        # --- Ambil hasil face recognition dari worker dan update tracked_objects jika perlu ---
+        while not face_result_queue.empty():
+            result = face_result_queue.get()
+            temp_id = result['temp_id']
+            matched_id = result['matched_id']
+            if temp_id in pending_candidates:
+                centroid = pending_candidates[temp_id]['centroid']
+                bbox = pending_candidates[temp_id]['bbox']
+                if matched_id:
+                    # Jika wajah sudah ada, update tracked_objects[matched_id] agar bbox dan centroid tetap up-to-date
+                    tracked_objects[matched_id] = {
+                        'centroid': centroid,
+                        'bbox': bbox,
+                        'disappeared': 0,
+                        'confirmed_frames': CONFIRMATION_FRAMES_THRESHOLD
+                    }
+                    print(f"[INFO] Wajah sudah ada (ID: {matched_id}), update bbox & centroid, pending_candidates {temp_id} dihapus, tidak buat ID baru.")
+                    del pending_candidates[temp_id]
+                else:
+                    # Jika wajah belum ada, buat ID baru
+                    if register_object(centroid, bbox, matched_id=None):
+                        del pending_candidates[temp_id]
+            face_result_queue.task_done()
 
         # --- LANGKAH 5: EKSEKUSI ORANG BARU (DENGAN LOGIKA KONFIRMASI & FACE RECOGNITION) ---
 
@@ -367,17 +396,22 @@ def run_detection_and_alerting():
         for object_id, data in list(tracked_objects.items()):
             # Cek apakah objek sudah dikonfirmasi dan belum pernah dikirimi alert
             if data['confirmed_frames'] >= CONFIRMATION_FRAMES_THRESHOLD and object_id not in persons_alerted:
-                # Hanya simpan dan alert jika benar-benar terdeteksi wajah
-                if save_face_crop(frame, data['bbox'], object_id):
+                # Hanya lakukan crop dan alert jika ID ini benar-benar baru (bukan hasil match)
+                # Cek apakah file img_person{object_id}.png sudah ada, jika sudah, skip crop & alert
+                filename = os.path.join(FACES_DIR, f"img_person{object_id}.png")
+                if not os.path.exists(filename):
+                    face_task_queue.put({'type': 'save_crop', 'frame': frame.copy(), 'bbox': data['bbox'], 'person_id': object_id})
                     timestamp = datetime.now()
                     persons_alerted[object_id] = timestamp
                     print(f"[ALERT] Person {object_id} terkonfirmasi sebagai orang baru (wajah terdeteksi).")
                     send_api_alert(object_id, timestamp, data['bbox'])
+                else:
+                    # Sudah pernah dicrop, jangan lakukan crop/alert lagi
+                    persons_alerted[object_id] = datetime.now()
 
             # Gambar visualisasi pada frame
-            centroid = data['centroid']
-            bbox = data['bbox']
-            # Tentukan warna dan label berdasarkan status konfirmasi
+            centroid = tuple(map(int, data['centroid']))
+            bbox = tuple(map(int, data['bbox']))
             if object_id in persons_alerted:
                 label = f"Person {object_id}"
                 color = (0, 255, 0)
@@ -387,60 +421,18 @@ def run_detection_and_alerting():
             cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
             cv2.putText(frame, label, (bbox[0], bbox[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            cv2.circle(frame, tuple(centroid), 4, color, -1)
+            cv2.circle(frame, centroid, 4, color, -1)
 
-        # Visualisasi dan face recognition untuk calon objek (pending_candidates)
+        # Visualisasi untuk calon objek (pending_candidates)
         for temp_id, data in pending_candidates.items():
-            bbox = data['bbox']
-            centroid = data['centroid']
-            # Lakukan face recognition 1-to-many sebelum generate ID baru
-            from deepface import DeepFace
-            import glob
-            import os
-            x1, y1, x2, y2 = bbox
-            h, w = frame.shape[:2]
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
-            person_crop = frame[y1:y2, x1:x2].copy()
+            bbox = tuple(map(int, data['bbox']))
+            centroid = tuple(map(int, data['centroid']))
             label = "Face Recognition"
-            color = (255, 0, 0)  # Biru untuk proses face recognition
-            exist_face = False
-            matched_id = None
-            if person_crop.size != 0:
-                gray = cv2.cvtColor(person_crop, cv2.COLOR_BGR2GRAY)
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-                if len(faces) > 0:
-                    face = max(faces, key=lambda rect: rect[2]*rect[3])
-                    fx, fy, fw, fh = face
-                    face_crop = person_crop[fy:fy+fh, fx:fx+fw].copy()
-                    temp_face_path = os.path.join(FACES_DIR, 'temp_face_check.png')
-                    cv2.imwrite(temp_face_path, face_crop)
-                    image_files = []
-                    for ext in ('*.png', '*.jpg', '*.jpeg'):
-                        image_files.extend(glob.glob(os.path.join(FACES_DIR, ext)))
-                    image_files = [f for f in image_files if not f.endswith('temp_face_check.png')]
-                    for file in image_files:
-                        try:
-                            result = DeepFace.verify(img1_path=temp_face_path, img2_path=file, model_name='Facenet', enforce_detection=False)
-                            if result['verified'] and result['distance'] < 0.6:
-                                import re
-                                match = re.search(r'img_person(\d+)', os.path.basename(file))
-                                matched_id = int(match.group(1)) if match else None
-                                exist_face = True
-                                break
-                        except Exception as e:
-                            continue
-                    if os.path.exists(temp_face_path):
-                        os.remove(temp_face_path)
-            if exist_face:
-                label = f"Exist Face (ID {matched_id})"
-                color = (0, 0, 255)  # Merah jika wajah sudah ada
+            color = (255, 0, 0)
             cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
             cv2.putText(frame, label, (bbox[0], bbox[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            cv2.circle(frame, tuple(centroid), 4, color, -1)
-            # Jika wajah sudah ada, jangan buat person baru, pending_candidates tetap dipertahankan
-            # (tidak perlu hapus, biarkan tracker mengelola lifecycle-nya)
+            cv2.circle(frame, centroid, 4, color, -1)
 
         cv2.imshow('Sistem Deteksi Orang Baru (Tekan Q untuk Keluar)', frame)
 
@@ -449,6 +441,8 @@ def run_detection_and_alerting():
 
     cap.release()
     cv2.destroyAllWindows()
+    stop_face_worker.set()
+    face_thread.join(timeout=1)
     print("Webcam dilepaskan dan jendela ditutup.")
 
 if __name__ == "__main__":
