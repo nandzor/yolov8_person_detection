@@ -315,18 +315,18 @@ def save_face_crop(frame, bbox, person_id):
         fx, fy, fw, fh = face
         face_area = fw * fh
         person_area = (x2 - x1) * (y2 - y1)
-        if person_area > 0 and (face_area / person_area) <= 0.2:
+        if person_area > 0 and (face_area / person_area) <= 0.3:
             face_crop = person_crop[fy:fy+fh, fx:fx+fw].copy()
             filename = os.path.join(FACES_DIR, f"img_person{person_id}.png")
             try:
                 cv2.imwrite(filename, face_crop)
-                print(f"[INFO] Wajah untuk Person {person_id} disimpan ke {filename} (area wajah <= 80%)")
+                print(f"[INFO] Wajah untuk Person {person_id} disimpan ke {filename} (area wajah <= 70%)")
                 return True
             except Exception as e:
                 print(f"[ERROR] Gagal menyimpan file wajah untuk Person {person_id}: {e}")
                 return False
         else:
-            print(f"[INFO] Area wajah kurang dari 90% bounding box orang untuk Person {person_id}, tidak menyimpan crop.")
+            print(f"[INFO] Area wajah kurang dari 70% bounding box orang untuk Person {person_id}, tidak menyimpan crop.")
             return False
     else:
         print(f"[INFO] Tidak ditemukan wajah pada area orang untuk Person {person_id}, tidak menyimpan crop.")
