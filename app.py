@@ -75,7 +75,7 @@ persons_alerted = {}
 
 
 def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold=0.6):
-    """Bandingkan crop wajah dengan semua wajah di folder faces menggunakan DeepFace. Return True jika match."""
+    """Bandingkan crop wajah dengan semua wajah di folder faces menggunakan DeepFace. Return nama jika match, None jika tidak."""
     import glob
     from deepface import DeepFace
     x1, y1, x2, y2 = bbox
@@ -84,40 +84,35 @@ def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold
     x2, y2 = min(w, x2), min(h, y2)
     person_crop = frame[y1:y2, x1:x2].copy()
     if person_crop.size == 0:
-        return False
+        return None
     gray = cv2.cvtColor(person_crop, cv2.COLOR_BGR2GRAY)
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
     if len(faces) == 0:
-        return False
+        return None
     face = max(faces, key=lambda rect: rect[2]*rect[3])
     fx, fy, fw, fh = face
     face_crop = person_crop[fy:fy+fh, fx:fx+fw].copy()
-    # Simpan crop wajah sementara
     temp_face_path = os.path.join(FACES_DIR, 'temp_face_check.png')
     cv2.imwrite(temp_face_path, face_crop)
-    # Cari semua file gambar di folder faces (one-to-many)
-    image_files = []
-    for ext in ('*.png', '*.jpg', '*.jpeg'):
-        image_files.extend(glob.glob(os.path.join(FACES_DIR, ext)))
-    # Hapus file temp dari list jika ada
-    image_files = [f for f in image_files if not f.endswith('temp_face_check.png')]
+    image_files = glob.glob(os.path.join(FACES_DIR, 'face_*.png'))
     if not image_files:
         if os.path.exists(temp_face_path):
             os.remove(temp_face_path)
-        return False
-    # One-to-many face recognition dengan DeepFace
+        return None
     for file in image_files:
         try:
             result = DeepFace.verify(img1_path=temp_face_path, img2_path=file, model_name=model_name, enforce_detection=False)
             if result['verified'] and result['distance'] < distance_threshold:
-                # Ambil ID dari nama file (img_person<ID>.png)
                 import re
-                match = re.search(r'img_person(\d+)', os.path.basename(file))
-                matched_id = int(match.group(1)) if match else None
-                print(f"[FACE RECOG] Wajah match dengan {file} (distance={result['distance']:.3f}), gunakan ID: {matched_id}")
+                match = re.match(r'face_(.+)\.png', os.path.basename(file))
+                if match:
+                    name = match.group(1).replace('_', ' ').title()
+                else:
+                    name = os.path.splitext(os.path.basename(file))[0]
+                print(f"[FACE RECOG] Wajah match dengan {file} (distance={result['distance']:.3f}), gunakan nama: {name}")
                 if os.path.exists(temp_face_path):
                     os.remove(temp_face_path)
-                return matched_id
+                return name
         except Exception as e:
             print(f"[FACE RECOG] Error membandingkan dengan {file}: {e}")
             continue
@@ -129,18 +124,18 @@ def register_object(centroid, bbox, frame=None):
     """Mendaftarkan objek baru yang sudah terkonfirmasi ke tracked_objects dengan ID unik, setelah face recognition."""
     global next_person_id
     # Face recognition: jika wajah sudah ada, update tracked_objects[ID] dengan data baru
-    matched_id = None
+    matched_name = None
     if frame is not None:
-        matched_id = is_face_already_exists(frame, bbox)
-    if matched_id:
-        # Update tracked_objects[matched_id] jika sudah ada, jika belum tambahkan
-        tracked_objects[matched_id] = {
+        matched_name = is_face_already_exists(frame, bbox)
+    if matched_name:
+        # Update tracked_objects dengan nama jika sudah ada, jika belum tambahkan
+        tracked_objects[matched_name] = {
             'centroid': centroid,
             'bbox': bbox,
             'disappeared': 0,
             'confirmed_frames': CONFIRMATION_FRAMES_THRESHOLD
         }
-        print(f"[INFO] Wajah sudah ada di database, update ID: {matched_id}, batal generate ID baru dan alert.")
+        print(f"[INFO] Wajah sudah ada di database, update nama: {matched_name}, batal generate ID baru dan alert.")
         return False
     tracked_objects[next_person_id] = {
         'centroid': centroid,
@@ -295,42 +290,6 @@ def send_api_alert(person_id, timestamp, bounding_box):
         print(f"[API] Gagal mengirim data: {e}")
 
 
-def save_face_crop(frame, bbox, person_id):
-    """Hanya menyimpan crop wajah jika benar-benar terdeteksi wajah di dalam bounding box orang."""
-    os.makedirs(FACES_DIR, exist_ok=True)
-    x1, y1, x2, y2 = bbox
-    h, w = frame.shape[:2]
-    x1, y1 = max(0, x1), max(0, y1)
-    x2, y2 = min(w, x2), min(h, y2)
-    person_crop = frame[y1:y2, x1:x2].copy()
-    if person_crop.size == 0:
-        print(f"[WARNING] Gagal memotong area orang untuk Person {person_id}, bounding box mungkin di luar frame.")
-        return False
-
-    gray = cv2.cvtColor(person_crop, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-
-    if len(faces) > 0:
-        face = max(faces, key=lambda rect: rect[2]*rect[3])
-        fx, fy, fw, fh = face
-        face_area = fw * fh
-        person_area = (x2 - x1) * (y2 - y1)
-        if person_area > 0 and (face_area / person_area) <= 0.3:
-            face_crop = person_crop[fy:fy+fh, fx:fx+fw].copy()
-            filename = os.path.join(FACES_DIR, f"img_person{person_id}.png")
-            try:
-                cv2.imwrite(filename, face_crop)
-                print(f"[INFO] Wajah untuk Person {person_id} disimpan ke {filename} (area wajah <= 70%)")
-                return True
-            except Exception as e:
-                print(f"[ERROR] Gagal menyimpan file wajah untuk Person {person_id}: {e}")
-                return False
-        else:
-            print(f"[INFO] Area wajah kurang dari 70% bounding box orang untuk Person {person_id}, tidak menyimpan crop.")
-            return False
-    else:
-        print(f"[INFO] Tidak ditemukan wajah pada area orang untuk Person {person_id}, tidak menyimpan crop.")
-        return False
 
 
 def run_detection_and_alerting():
@@ -367,23 +326,31 @@ def run_detection_and_alerting():
         for object_id, data in list(tracked_objects.items()):
             # Cek apakah objek sudah dikonfirmasi dan belum pernah dikirimi alert
             if data['confirmed_frames'] >= CONFIRMATION_FRAMES_THRESHOLD and object_id not in persons_alerted:
-                # Hanya simpan dan alert jika benar-benar terdeteksi wajah
-                if save_face_crop(frame, data['bbox'], object_id):
-                    timestamp = datetime.now()
-                    persons_alerted[object_id] = timestamp
-                    print(f"[ALERT] Person {object_id} terkonfirmasi sebagai orang baru (wajah terdeteksi).")
-                    send_api_alert(object_id, timestamp, data['bbox'])
+                # Hanya alert jika benar-benar terdeteksi wajah (face recognition saja, tidak simpan crop)
+                timestamp = datetime.now()
+                persons_alerted[object_id] = timestamp
+                print(f"[ALERT] Person {object_id} terkonfirmasi sebagai orang baru (face recognition).")
+                send_api_alert(object_id, timestamp, data['bbox'])
 
             # Gambar visualisasi pada frame
             centroid = data['centroid']
             bbox = data['bbox']
             # Tentukan warna dan label berdasarkan status konfirmasi
-            if object_id in persons_alerted:
-                label = f"Person {object_id}"
+            # Ambil nama dari file face jika match, jika tidak tampilkan ID sementara
+            label = f"ID {object_id} (Confirming...)"
+            color = (0, 255, 255)
+            # Cek apakah object_id sudah pernah match dengan file face
+            face_name = None
+            import glob, re, os
+            for file in glob.glob(os.path.join(FACES_DIR, 'face_*.png')):
+                match = re.match(r'face_(.+)\.png', os.path.basename(file))
+                if match and object_id in persons_alerted:
+                    # Cek jika sudah pernah alert, ambil nama
+                    face_name = match.group(1).replace('_', ' ').title()
+                    break
+            if object_id in persons_alerted and face_name:
+                label = face_name
                 color = (0, 255, 0)
-            else:
-                label = f"ID {object_id} (Confirming...)"
-                color = (0, 255, 255)
             cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
             cv2.putText(frame, label, (bbox[0], bbox[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
@@ -433,7 +400,24 @@ def run_detection_and_alerting():
                     if os.path.exists(temp_face_path):
                         os.remove(temp_face_path)
             if exist_face:
-                label = f"Exist Face (ID {matched_id})"
+                # Cari nama label dari file face jika ada
+                label_name = None
+                for file in image_files:
+                    import re, os
+                    match = re.search(r'img_person(\d+)', os.path.basename(file))
+                    if matched_id and match and int(match.group(1)) == matched_id:
+                        # Cek jika ada file dengan format face_<nama>.png
+                        alt_name = os.path.basename(file).replace('img_person', 'face_')
+                        alt_path = os.path.join(FACES_DIR, alt_name)
+                        if os.path.exists(alt_path):
+                            label_name = os.path.splitext(alt_name)[0].replace('face_', '')
+                        else:
+                            label_name = f"ID {matched_id}"
+                        break
+                if label_name:
+                    label = f"{label_name}"
+                else:
+                    label = f"Exist Face (ID {matched_id})"
                 color = (0, 0, 255)  # Merah jika wajah sudah ada
             cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
             cv2.putText(frame, label, (bbox[0], bbox[1] - 10),
