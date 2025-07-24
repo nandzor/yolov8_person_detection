@@ -22,7 +22,37 @@ def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold
         return None, None
     face = max(faces, key=lambda rect: rect[2]*rect[3])
     fx, fy, fw, fh = face
-    face_abs_bbox = (x1 + fx, y1 + fy, x1 + fx + fw, y1 + fy + fh)
+
+    # Add padding for better visualization
+    padding = 20
+    fx_pad = fx - padding
+    fy_pad = fy - padding
+    fw_pad = fw + (2 * padding)
+    fh_pad = fh + (2 * padding)
+
+    # Create padded absolute bbox
+    face_abs_bbox_padded = (
+        max(0, x1 + fx_pad),
+        max(0, y1 + fy_pad),
+        min(w, x1 + fx_pad + fw_pad),
+        min(h, y1 + fy_pad + fh_pad)
+    )
+
+    # Enforce a 1:1 aspect ratio for consistency
+    x1_p, y1_p, x2_p, y2_p = face_abs_bbox_padded
+    w_p = x2_p - x1_p
+    h_p = y2_p - y1_p
+    cx = x1_p + w_p // 2
+    cy = y1_p + h_p // 2
+    size = max(w_p, h_p)
+    
+    face_abs_bbox = (
+        max(0, cx - size // 2),
+        max(0, cy - size // 2),
+        min(w, cx + size // 2),
+        min(h, cy + size // 2)
+    )
+
     face_crop = person_crop[fy:fy+fh, fx:fx+fw].copy()
     # Ensure faces_temp directory exists
     faces_temp_dir = os.path.join(FACES_DIR, '..', 'faces_temp')
