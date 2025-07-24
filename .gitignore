@@ -29,6 +29,7 @@ env.bak/
 .vscode/
 # Project-specific
 faces/
+faces_temp/
 # OS
 Thumbs.db
 .DS_Store

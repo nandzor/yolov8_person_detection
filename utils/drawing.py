@@ -10,11 +10,17 @@ def draw_person_box(frame, tracked_objects, pending_candidates):
         centroid = data['centroid']
         # Only run face recognition when frames == 1 or every 30 frames
         if 'face_name' not in data or data['frames'] == 1 or data['frames'] % 30 == 0:
-            name = is_face_already_exists(frame, bbox)
+            name, face_bbox = is_face_already_exists(frame, bbox)
+            if face_bbox is None:
+                face_bbox = bbox
             tracked_objects[object_id]['face_name'] = name
+            tracked_objects[object_id]['face_bbox'] = face_bbox
         else:
             name = tracked_objects[object_id].get('face_name', None)
-        recog_results.append({'object_id': object_id, 'name': name, 'centroid': centroid, 'bbox': bbox})
+            face_bbox = tracked_objects[object_id].get('face_bbox', bbox)
+            if face_bbox is None:
+                face_bbox = bbox
+        recog_results.append({'object_id': object_id, 'name': name, 'centroid': centroid, 'bbox': face_bbox})
     for r in recog_results:
         if r['name'] and r['name'] not in assigned_names:
             label = r['name']

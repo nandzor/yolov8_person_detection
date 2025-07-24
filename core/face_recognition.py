@@ -14,14 +14,15 @@ def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold
     x2, y2 = min(w, x2), min(h, y2)
     person_crop = frame[y1:y2, x1:x2].copy()
     if person_crop.size == 0:
-        return None
+        return None, None
     gray = cv2.cvtColor(person_crop, cv2.COLOR_BGR2GRAY)
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
     if len(faces) == 0:
-        return None
+        return None, None
     face = max(faces, key=lambda rect: rect[2]*rect[3])
     fx, fy, fw, fh = face
+    face_abs_bbox = (x1 + fx, y1 + fy, x1 + fx + fw, y1 + fy + fh)
     face_crop = person_crop[fy:fy+fh, fx:fx+fw].copy()
     # Ensure faces_temp directory exists
     faces_temp_dir = os.path.join(FACES_DIR, '..', 'faces_temp')
@@ -38,7 +39,7 @@ def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold
         for f in temp_files_to_compare:
             if os.path.exists(f):
                 os.remove(f)
-        return None
+        return None, face_abs_bbox
     for file in image_files:
         try:
             for temp_file in temp_files_to_compare:
@@ -57,11 +58,11 @@ def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold
                                 os.remove(f)
                     else:
                         name = os.path.splitext(os.path.basename(file))[0]
-                    return name
+                    return name, face_abs_bbox
         except Exception as e:
             continue
     # Clean up temp files if no match
     for f in temp_files_to_compare:
         if os.path.exists(f):
             os.remove(f)
-    return None
+    return None, face_abs_bbox
