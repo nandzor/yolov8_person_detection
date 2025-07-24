@@ -8,8 +8,12 @@ def draw_person_box(frame, tracked_objects, pending_candidates):
     for object_id, data in list(tracked_objects.items()):
         bbox = data['bbox']
         centroid = data['centroid']
-        print(f"[DRAW] Deteksi bbox: {bbox} untuk object_id: {object_id}")
-        name = is_face_already_exists(frame, bbox)
+        # Only run face recognition when frames == 1 or every 30 frames
+        if 'face_name' not in data or data['frames'] == 1 or data['frames'] % 30 == 0:
+            name = is_face_already_exists(frame, bbox)
+            tracked_objects[object_id]['face_name'] = name
+        else:
+            name = tracked_objects[object_id].get('face_name', None)
         recog_results.append({'object_id': object_id, 'name': name, 'centroid': centroid, 'bbox': bbox})
     for r in recog_results:
         if r['name'] and r['name'] not in assigned_names:
@@ -21,7 +25,9 @@ def draw_person_box(frame, tracked_objects, pending_candidates):
             color = (0, 165, 255)
         bbox = r['bbox']
         centroid = r['centroid']
-        print(f"[DRAW] Gambar bbox: {bbox} label: {label}")
+        # Only print every 30 frames
+        if tracked_objects[r['object_id']]['frames'] % 30 == 0:
+            print(f"[DRAW] Gambar bbox: {bbox} label: {label}")
         cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
         cv2.putText(frame, label, (bbox[0], bbox[1] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)

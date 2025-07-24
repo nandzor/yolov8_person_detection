@@ -52,8 +52,16 @@ def update_tracker(detections, frame=None):
             if D[row, col] > MAX_DISTANCE:
                 continue
             object_id = object_ids[row]
-            tracked_objects[object_id]['bbox'] = input_bboxes[col]
-            tracked_objects[object_id]['centroid'] = tuple(input_centroids[col])
+            # Smooth update using exponential moving average (EMA)
+            alpha = 0.2  # Smoothing factor (0.0 = no update, 1.0 = instant update)
+            prev_centroid = np.array(tracked_objects[object_id]['centroid'])
+            new_centroid = np.array(input_centroids[col])
+            smoothed_centroid = tuple((alpha * new_centroid + (1 - alpha) * prev_centroid).astype(int))
+            prev_bbox = np.array(tracked_objects[object_id]['bbox'])
+            new_bbox = np.array(input_bboxes[col])
+            smoothed_bbox = tuple((alpha * new_bbox + (1 - alpha) * prev_bbox).astype(int))
+            tracked_objects[object_id]['bbox'] = smoothed_bbox
+            tracked_objects[object_id]['centroid'] = smoothed_centroid
             tracked_objects[object_id]['disappeared'] = 0
             tracked_objects[object_id]['frames'] += 1
             used_rows.add(row)

@@ -7,6 +7,7 @@ from utils.config import FACES_DIR
 
 def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold=0.6):
     from deepface import DeepFace
+    import shutil
     x1, y1, x2, y2 = bbox
     h, w = frame.shape[:2]
     x1, y1 = max(0, x1), max(0, y1)
@@ -22,27 +23,45 @@ def is_face_already_exists(frame, bbox, model_name='Facenet', distance_threshold
     face = max(faces, key=lambda rect: rect[2]*rect[3])
     fx, fy, fw, fh = face
     face_crop = person_crop[fy:fy+fh, fx:fx+fw].copy()
-    temp_face_path = os.path.join(FACES_DIR, 'temp_face_check.png')
-    cv2.imwrite(temp_face_path, face_crop)
+    # Ensure faces_temp directory exists
+    faces_temp_dir = os.path.join(FACES_DIR, '..', 'faces_temp')
+    os.makedirs(faces_temp_dir, exist_ok=True)
+    temp_face_path = os.path.join(faces_temp_dir, 'temp_face_check.png')
+    # Only create temp_face_check.png if neither temp_face_check.png nor any temp_face_check_*.png exists
+    existing_temp_files = glob.glob(os.path.join(faces_temp_dir, 'temp_face_check_*.png'))
+    if not os.path.exists(temp_face_path) and not existing_temp_files:
+        cv2.imwrite(temp_face_path, face_crop)
+    # Use the available temp file for comparison
+    temp_files_to_compare = [temp_face_path] if os.path.exists(temp_face_path) else existing_temp_files
     image_files = glob.glob(os.path.join(FACES_DIR, 'face_*.png'))
     if not image_files:
-        if os.path.exists(temp_face_path):
-            os.remove(temp_face_path)
+        for f in temp_files_to_compare:
+            if os.path.exists(f):
+                os.remove(f)
         return None
     for file in image_files:
         try:
-            result = DeepFace.verify(img1_path=temp_face_path, img2_path=file, model_name=model_name, enforce_detection=False)
-            if result['verified'] and result['distance'] < distance_threshold:
-                match = re.match(r'face_(.+)\.png', os.path.basename(file))
-                if match:
-                    name = match.group(1).replace('_', ' ').title()
-                else:
-                    name = os.path.splitext(os.path.basename(file))[0]
-                if os.path.exists(temp_face_path):
-                    os.remove(temp_face_path)
-                return name
+            for temp_file in temp_files_to_compare:
+                result = DeepFace.verify(img1_path=temp_file, img2_path=file, model_name=model_name, enforce_detection=False)
+                if result['verified'] and result['distance'] < distance_threshold:
+                    match = re.match(r'face_(.+)\.png', os.path.basename(file))
+                    if match:
+                        name = match.group(1).replace('_', ' ').title()
+                        # Rename temp_face_check.png to temp_face_check_{name}.png if not already exists
+                        temp_face_named = os.path.join(faces_temp_dir, f'temp_face_check_{match.group(1)}.png')
+                        if os.path.exists(temp_face_path) and not os.path.exists(temp_face_named):
+                            shutil.move(temp_face_path, temp_face_named)
+                        # Clean up other temp files except the named one
+                        for f in temp_files_to_compare:
+                            if f != temp_face_named and os.path.exists(f):
+                                os.remove(f)
+                    else:
+                        name = os.path.splitext(os.path.basename(file))[0]
+                    return name
         except Exception as e:
             continue
-    if os.path.exists(temp_face_path):
-        os.remove(temp_face_path)
+    # Clean up temp files if no match
+    for f in temp_files_to_compare:
+        if os.path.exists(f):
+            os.remove(f)
     return None
