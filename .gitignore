@@ -22,6 +22,7 @@ build/
 *.env
 .venv/
 venv/
+myenv/
 ENV/
 env.bak/
 .idea/
