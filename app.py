@@ -36,6 +36,8 @@ import json
 from datetime import datetime
 from scipy.spatial import distance as dist # Import eksplisit untuk kejelasan
 import os # Ditambahkan untuk operasi direktori
+import glob
+import re
 
 # Inisialisasi Haar Cascade untuk deteksi wajah
 HAAR_CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
@@ -323,34 +325,62 @@ def run_detection_and_alerting():
         # --- LANGKAH 5: EKSEKUSI ORANG BARU (DENGAN LOGIKA KONFIRMASI & FACE RECOGNITION) ---
 
         # Visualisasi dan eksekusi untuk objek yang sudah terkonfirmasi (tracked_objects)
+        # --- One-to-one face recognition assignment ---
+        from deepface import DeepFace
+        face_files = glob.glob(os.path.join(FACES_DIR, 'face_*.png'))
+        face_names = []
+        for file in face_files:
+            match = re.match(r'face_(.+)\.png', os.path.basename(file))
+            if match:
+                face_names.append(match.group(1).replace('_', ' ').title())
+            else:
+                face_names.append(os.path.splitext(os.path.basename(file))[0])
+        recog_results = []
         for object_id, data in list(tracked_objects.items()):
-            # Cek apakah objek sudah dikonfirmasi dan belum pernah dikirimi alert
-            if data['confirmed_frames'] >= CONFIRMATION_FRAMES_THRESHOLD and object_id not in persons_alerted:
-                # Hanya alert jika benar-benar terdeteksi wajah (face recognition saja, tidak simpan crop)
-                timestamp = datetime.now()
-                persons_alerted[object_id] = timestamp
-                print(f"[ALERT] Person {object_id} terkonfirmasi sebagai orang baru (face recognition).")
-                send_api_alert(object_id, timestamp, data['bbox'])
-
-            # Gambar visualisasi pada frame
-            centroid = data['centroid']
             bbox = data['bbox']
-            # Tentukan warna dan label berdasarkan status konfirmasi
-            # Ambil nama dari file face jika match, jika tidak tampilkan ID sementara
-            label = f"ID {object_id} (Confirming...)"
-            color = (0, 255, 255)
-            # Cek apakah object_id sudah pernah match dengan file face
-            face_name = None
-            import glob, re, os
-            for file in glob.glob(os.path.join(FACES_DIR, 'face_*.png')):
-                match = re.match(r'face_(.+)\.png', os.path.basename(file))
-                if match and object_id in persons_alerted:
-                    # Cek jika sudah pernah alert, ambil nama
-                    face_name = match.group(1).replace('_', ' ').title()
-                    break
-            if object_id in persons_alerted and face_name:
-                label = face_name
+            x1, y1, x2, y2 = bbox
+            h, w = frame.shape[:2]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            person_crop = frame[y1:y2, x1:x2].copy()
+            if person_crop.size == 0 or not face_files:
+                recog_results.append({'object_id': object_id, 'name': None, 'distance': 1e9, 'centroid': data['centroid'], 'bbox': bbox})
+                continue
+            gray = cv2.cvtColor(person_crop, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
+            if len(faces) == 0:
+                recog_results.append({'object_id': object_id, 'name': None, 'distance': 1e9, 'centroid': data['centroid'], 'bbox': bbox})
+                continue
+            face = max(faces, key=lambda rect: rect[2]*rect[3])
+            fx, fy, fw, fh = face
+            face_crop = person_crop[fy:fy+fh, fx:fx+fw].copy()
+            temp_face_path = os.path.join(FACES_DIR, f'temp_face_check_{object_id}.png')
+            cv2.imwrite(temp_face_path, face_crop)
+            best_name = None
+            best_distance = 1e9
+            for file, name in zip(face_files, face_names):
+                try:
+                    result = DeepFace.verify(img1_path=temp_face_path, img2_path=file, model_name='Facenet', enforce_detection=False)
+                    if result['verified'] and result['distance'] < best_distance:
+                        best_distance = result['distance']
+                        best_name = name
+                except Exception as e:
+                    continue
+            if os.path.exists(temp_face_path):
+                os.remove(temp_face_path)
+            recog_results.append({'object_id': object_id, 'name': best_name, 'distance': best_distance, 'centroid': data['centroid'], 'bbox': bbox})
+        # Assignment one-to-one: pilih pasangan (object, name) dengan distance terkecil, satu nama hanya untuk satu object
+        assigned_names = set()
+        for r in sorted(recog_results, key=lambda x: x['distance']):
+            if r['name'] and r['name'] not in assigned_names and r['distance'] < 0.6:
+                label = r['name']
                 color = (0, 255, 0)
+                assigned_names.add(r['name'])
+            else:
+                label = "Unknown Person"
+                color = (0, 165, 255)
+            bbox = r['bbox']
+            centroid = r['centroid']
             cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
             cv2.putText(frame, label, (bbox[0], bbox[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
@@ -363,7 +393,6 @@ def run_detection_and_alerting():
             # Lakukan face recognition 1-to-many sebelum generate ID baru
             from deepface import DeepFace
             import glob
-            import os
             x1, y1, x2, y2 = bbox
             h, w = frame.shape[:2]
             x1, y1 = max(0, x1), max(0, y1)
