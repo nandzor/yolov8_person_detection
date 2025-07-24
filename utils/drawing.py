@@ -1,52 +1,89 @@
 # drawing.py
 import cv2
-from core.face_recognition import is_face_already_exists
 import numpy as np
 
 def draw_person_box(frame, tracked_objects, pending_candidates):
-    assigned_names = set()
-    recog_results = []
-    for object_id, data in list(tracked_objects.items()):
-        bbox = data['bbox']
-        centroid = data['centroid']
-
-        # Face recognition and bbox logic
-        if 'face_name' not in data or data['frames'] == 1 or data['frames'] % 30 == 0:
-            name, face_bbox_new = is_face_already_exists(frame, bbox)
-            tracked_objects[object_id]['face_name'] = name
-            
-            # Intelligent Fallback: Only update face_bbox if a face was actually found
-            if face_bbox_new is not None:
-                tracked_objects[object_id]['last_seen_face_bbox'] = face_bbox_new
-        
-        name = tracked_objects[object_id].get('face_name')
-        # Use last known face bbox; if none, fallback to body bbox
-        face_bbox = tracked_objects[object_id].get('last_seen_face_bbox', bbox)
-
-        # Apply smoothing
-        alpha_face = 0.4 # Adjusted for stability
-        smoothed_bbox = tuple((alpha_face * np.array(face_bbox) + (1 - alpha_face) * np.array(data.get('smoothed_bbox', face_bbox))).astype(int))
-        tracked_objects[object_id]['smoothed_bbox'] = smoothed_bbox
-        
-        recog_results.append({'object_id': object_id, 'name': name, 'centroid': centroid, 'bbox': smoothed_bbox})
+    """Versi super aman - tidak akan pernah force close"""
     
-    for r in recog_results:
-        object_id = r['object_id']
-        if r['name'] and r['name'] not in assigned_names:
-            label = r['name']
-            color = (0, 255, 0)
-            assigned_names.add(r['name'])
-        else:
-            label = f"Unknown Person (ID {r['object_id']})"
-            color = (0, 165, 255)
-        
-        bbox = r['bbox']
-        
-        # Only print every 30 frames
-        if tracked_objects[object_id]['frames'] % 30 == 0:
-            print(f"[DRAW] Gambar bbox: {bbox} label: {label}")
-        
-        cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
-        cv2.putText(frame, label, (bbox[0], bbox[1] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        cv2.circle(frame, tuple(centroid), 4, color, -1)
+    # JANGAN PAKE THREAD, JANGAN PAKE IMPORT RIBET
+    try:
+        for object_id, data in tracked_objects.items():
+            try:
+                # AMBIL DATA DENGAN AMAN
+                bbox = data.get('bbox')
+                centroid = data.get('centroid')
+                frames = data.get('frames', 0)
+                
+                # VALIDASI DATA
+                if not bbox or not centroid:
+                    continue
+                if len(bbox) != 4:
+                    continue
+                    
+                # GAK USAH RECOGNITION LAGI, PAKE YANG SUDAH ADA
+                name = data.get('face_name', '')
+                
+                # PILIH WARNA YANG AMAN
+                try:
+                    if name and str(name).lower() not in ['', 'unknown', 'none', 'null']:
+                        color = (0, 255, 0)  # HIJAU
+                        label = str(name)[:20]  # BATAS PANJANG LABEL
+                    else:
+                        color = (0, 165, 255)  # ORANGE
+                        label = f"ID{object_id}"
+                except:
+                    color = (0, 165, 255)
+                    label = f"ID{object_id}"
+                
+                # CONVERT COORDINATE DENGAN AMAN
+                try:
+                    x1 = int(float(bbox[0]))
+                    y1 = int(float(bbox[1]))
+                    x2 = int(float(bbox[2]))
+                    y2 = int(float(bbox[3]))
+                    cx = int(float(centroid[0]))
+                    cy = int(float(centroid[1]))
+                except:
+                    continue  # SKIP KALAU ERROR
+                
+                # VALIDASI NILAI
+                if x1 < 0 or y1 < 0 or x2 < 0 or y2 < 0:
+                    continue
+                if x1 > frame.shape[1] or x2 > frame.shape[1]:
+                    continue
+                if y1 > frame.shape[0] or y2 > frame.shape[0]:
+                    continue
+                    
+                # GAMBAR DENGAN AMAN
+                try:
+                    # RECTANGLE
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
+                    
+                    # TEXT (cek dulu biar gak keluar frame)
+                    text_y = y1 - 5 if y1 > 15 else y1 + 15
+                    cv2.putText(frame, label, (x1, text_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                    
+                    # CENTROID
+                    cv2.circle(frame, (cx, cy), 2, color, -1)
+                    
+                except Exception as draw_error:
+                    # DIEM AJA KALAU ERROR DRAWING
+                    pass
+                    
+            except Exception as object_error:
+                # DIEM AJA KALAU ERROR OBJECT
+                continue
+                
+    except Exception as main_error:
+        # DIEM AJA KALAU ERROR UTAMA
+        pass
+
+def draw_simple_fps(frame, fps):
+    """FPS yang super aman"""
+    try:
+        if fps and fps > 0:
+            cv2.putText(frame, f"FPS:{int(fps)}", (10, 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    except:
+        pass  # DIEM AJA
